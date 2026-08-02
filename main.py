@@ -6,33 +6,42 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
 from dotenv import load_dotenv
 from google import genai
 
 # ==========================================
-# 1. إعداد المفاتيح والاتصال
+# 1. إعداد المفاتيح والحالات
 # ==========================================
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-# الآيدي الخاص بك كمدير افتراضي
 ADMIN_ID = int(os.getenv("ADMIN_ID", 8280243933)) 
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
-# زيادة وقت مهلة الاتصال لتفادي مشاكل الشبكة
 session = AiohttpSession(timeout=30)
 bot = Bot(token=TELEGRAM_TOKEN, session=session)
 dp = Dispatcher()
 
+# حالة انتظار إدخال كود الخصم
+class PromoState(StatesGroup):
+    waiting_for_code = State()
+
 # قواميس التخزين المؤقتة
 user_requests = {}
-promo_codes = {}         # لحفظ أكواد الخصم ونسبتها: {"MISTX50": 50}
-user_active_promo = {}   # لحفظ الخصم النشط للعميل قبل الدفع: {user_id: 50}
-vip_users = set()        # قائمة الـ IDs للأشخاص المجانيين دائماً
+promo_codes = {}         # {"MISTX50": 50}
+user_active_promo = {}   # {user_id: 50}
+vip_users = set()        # قائمة الـ VIP
+
+# زر الدعم الفني الثابت للتوجيه عند الأخطاء
+SUPPORT_KEYBOARD = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="💬 التواصل مع الدعم الفني", url="https://t.me/DARKMAIL_77")]
+])
 
 # ==========================================
-# 🌐 خادم المنفذ الوهمي لتفادي حظر Render (Port Timeout)
+# 🌐 خادم المنفذ الوهمي لـ Render (Port Timeout)
 # ==========================================
 async def dummy_health_check(request):
     return web.Response(text="MISTX Bot is running successfully!")
@@ -45,21 +54,21 @@ async def start_dummy_server():
     port = int(os.environ.get("PORT", 8080))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
-    print(f"🌐 Dummy HTTP Server running on port {port} for Render health checks.")
+    print(f"🌐 Dummy HTTP Server running on port {port}")
 
 # ==========================================
-# 2. أوامر لوحة تحكم المدير (خاصة بك فقط)
+# 2. لوحة تحكم المدير
 # ==========================================
 @dp.message(Command("admin"))
 async def admin_panel(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
     text = (
         "👑 **لوحة تحكم المدير (متجر MISTX):**\n\n"
-        "➕ لإنشاء كود خصم (مثال كود NEW بخصم 50%):\n`/add_promo NEW 50`\n\n"
+        "➕ لإنشاء كود خصم:\n`/add_promo NEW 50`\n\n"
         "➖ لحذف كود خصم:\n`/del_promo NEW`\n\n"
         "📋 لعرض الأكواد الفعالة:\n`/promos`\n\n"
-        "🌟 لإعطاء شخص وصول مجاني دائم (VIP):\n`/free 123456789`\n\n"
-        "🗑 لإزالة الوصول المجاني الدائم:\n`/remove 123456789`"
+        "🌟 إضافة وصول مجاني دائم (VIP):\n`/free 123456789`\n\n"
+        "🗑 إزالة وصول مجاني:\n`/remove 123456789`"
     )
     await message.answer(text, parse_mode="Markdown")
 
@@ -71,7 +80,7 @@ async def add_promo_code(message: types.Message):
         code = parts[1].upper()
         discount = int(parts[2])
         promo_codes[code] = discount
-        await message.answer(f"✅ تم إنشاء كود الخصم `{code}` بنسبة خصم {discount}%.", parse_mode="Markdown")
+        await message.answer(f"✅ تم إنشاء كود الخصم `{code}` بنسبة {discount}%.", parse_mode="Markdown")
     except:
         await message.answer("⚠️ الطريقة الصحيحة: `/add_promo CODE 50`", parse_mode="Markdown")
 
@@ -115,32 +124,63 @@ async def remove_vip_user(message: types.Message):
     try:
         user_id = int(message.text.split()[1])
         vip_users.discard(user_id)
-        await message.answer(f"✅ تم إزالة العميل `{user_id}` من قائمة الـ VIP.", parse_mode="Markdown")
+        await message.answer(f"✅ تم إزالة العميل `{user_id}` من قائمة VIP.", parse_mode="Markdown")
     except:
         pass
 
 # ==========================================
-# 3. أوامر العميل (استخدام الخصم)
+# 3. التفاعل والتسليم وتفعيل الأزرار
 # ==========================================
-@dp.message(Command("code"))
-async def apply_promo_command(message: types.Message):
-    try:
-        code = message.text.split()[1].upper()
-        if code in promo_codes:
-            discount = promo_codes[code]
-            user_active_promo[message.from_user.id] = discount
-            
-            if discount == 100:
-                await message.answer("🎁 **تم تفعيل كود الخصم بنسبة 100%!**\nاكتب طلبك البرمجي الآن وستستلمه مجاناً بالكامل.")
-            else:
-                await message.answer(f"🎉 **تم تفعيل كود الخصم ({discount}%)!**\nاكتب طلبك البرمجي الآن وسيتم تطبيق الخصم على الفاتورة.")
+@dp.message(CommandStart())
+async def command_start_handler(message: types.Message, state: FSMContext):
+    await state.clear()
+    user_id = message.from_user.id
+    safe_name = message.from_user.full_name.replace("_", " ").replace("*", "").replace("`", "")
+    
+    welcome_text = (
+        f"أهلاً بك {safe_name} في متجر MISTX الرقمي للبرمجة! 🚀\n\n"
+        "أنا مساعدك الذكي ومطور الأكواد. اطلب أي سكربت برمجي أو أداة وسأقوم بتجهيزها لك فوراً."
+    )
+    
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🎟️ إدخال كود خصم", callback_data="btn_enter_promo")],
+        [InlineKeyboardButton(text="💬 الدعم الفني", url="https://t.me/DARKMAIL_77")]
+    ])
+    await message.answer(welcome_text, reply_markup=keyboard, parse_mode="Markdown")
+    
+    if user_id != ADMIN_ID:
+        try:
+            await bot.send_message(ADMIN_ID, f"🔔 شخص جديد دخل المتجر!\nالاسم: {safe_name}\nالـ ID: `{user_id}`", parse_mode="Markdown")
+        except:
+            pass
+
+# الضغط على زر إدخال كود الخصم
+@dp.callback_query(F.data == "btn_enter_promo")
+async def ask_for_promo_code(callback: types.CallbackQuery, state: FSMContext):
+    await callback.answer()
+    await state.set_state(PromoState.waiting_for_code)
+    await callback.message.answer("✏️ **يرجى كتابة أسطر كود الخصم وإرساله في الرسالة التالية:**", parse_mode="Markdown")
+
+# استقبال كود الخصم المكتوب من العميل
+@dp.message(PromoState.waiting_for_code)
+async def process_promo_input(message: types.Message, state: FSMContext):
+    code = message.text.strip().upper()
+    user_id = message.from_user.id
+    
+    if code in promo_codes:
+        discount = promo_codes[code]
+        user_active_promo[user_id] = discount
+        if discount == 100:
+            await message.answer("🎁 **تم تفعيل الخصم بنسبة 100%! طلبك البرمجي القادم مجاني بالكامل.**")
         else:
-            await message.answer("❌ كود الخصم غير صحيح أو ربما انتهت صلاحيته.")
-    except:
-        await message.answer("⚠️ يرجى إرسال الكود بالطريقة الصحيحة، مثال:\n`/code MISTX`", parse_mode="Markdown")
+            await message.answer(f"🎉 **تم تفعيل كود الخصم ({discount}%) بنجاح!**\nاطلب سكربتك الآن وسيتم تطبيق الخصم.")
+    else:
+        await message.answer("❌ كود الخصم غير صحيح أو انتهت صلاحيته.")
+    
+    await state.clear()
 
 # ==========================================
-# 4. دالة توليد الكود (الذكاء الاصطناعي)
+# 4. توليد الكود ومعالجة الطلبات
 # ==========================================
 async def generate_and_send_code(prompt_text, message: types.Message):
     await message.answer("⏳ جاري توليد وكتابة السكربت البرمجي عبر الذكاء الاصطناعي الآن...")
@@ -159,42 +199,12 @@ async def generate_and_send_code(prompt_text, message: types.Message):
             "شكراً لتعاملك مع متجر MISTX! إذا أردت أي تعديل، أخبرني بذلك."
         )
     except Exception as e:
-        await message.answer("⚠️ حدث خطأ أثناء توليد الكود. يرجى التواصل مع الإدارة.")
-
-# ==========================================
-# 5. التفاعل العام مع العملاء
-# ==========================================
-@dp.message(CommandStart())
-async def command_start_handler(message: types.Message):
-    user_id = message.from_user.id
-    
-    # تنظيف اسم العميل من الرموز التي قد تكسر الماركدوان
-    safe_name = message.from_user.full_name.replace("_", " ").replace("*", "").replace("`", "").replace("[", "").replace("]", "")
-    
-    welcome_text = (
-        f"أهلاً بك {safe_name} في متجر MISTX الرقمي للبرمجة! 🚀\n\n"
-        "أنا مساعدك الذكي ومطور الأكواد. اطلب أي سكربت وسأقوم بتجهيزه لك فوراً.\n\n"
-        "🎟 *إذا كان لديك كود خصم، يمكنك إدخاله عبر الأمر:* `/code [رمز الخصم]`"
-    )
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Help 🛠", url="https://t.me/DARKMAIL_77")]
-    ])
-    await message.answer(welcome_text, reply_markup=keyboard, parse_mode="Markdown")
-    
-    if user_id != ADMIN_ID:
-        admin_msg = f"🔔 شخص جديد دخل المتجر!\nالاسم: {safe_name}\nالـ ID: `{user_id}`"
-        try:
-            await bot.send_message(ADMIN_ID, admin_msg, parse_mode="Markdown")
-        except:
-            pass
-
-@dp.message(Command("help"))
-async def command_help_handler(message: types.Message):
-    help_text = "🛠 **قسم الدعم الفني:**\nللتواصل مع الإدارة استخدم الزر أدناه:"
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="💬 التواصل مع الإدارة", url="https://t.me/DARKMAIL_77")]
-    ])
-    await message.answer(help_text, reply_markup=keyboard, parse_mode="Markdown")
+        print(f"Error generating code: {e}")
+        await message.answer(
+            "⚠️ **حدث خطأ أثناء توليد الكود.**\nيرجى التواصل مع الدعم الفني لمساعدتك فوراً:",
+            reply_markup=SUPPORT_KEYBOARD,
+            parse_mode="Markdown"
+        )
 
 @dp.message()
 async def handle_chat_or_order(message: types.Message):
@@ -219,7 +229,6 @@ async def handle_chat_or_order(message: types.Message):
 
         discount = user_active_promo.get(user_id, 0)
         
-        # إذا كان المدير هو من يطلب، أو العميل VIP، أو استخدم كود مجاني
         if user_id in vip_users or user_id == ADMIN_ID or discount == 100:
             if discount == 100:
                 await message.answer("🎁 **تم تطبيق خصم 100%! طلبك مجاني بالكامل.**")
@@ -263,7 +272,7 @@ async def handle_chat_or_order(message: types.Message):
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=f"💳 دفع عبر PayPal ({price_usd}$)", url=paypal_dynamic_link)],
             [InlineKeyboardButton(text=f"⭐ دفع عبر نجوم تلجرام ({price_stars} نجمة)", callback_data=f"buy_stars_{price_stars}")],
-            [InlineKeyboardButton(text="☕ ادعم المطور", url=paypal_support_link)]
+            [InlineKeyboardButton(text="💬 التواصل مع الدعم الفني", url="https://t.me/DARKMAIL_77")]
         ])
         
         text_msg = (
@@ -277,11 +286,15 @@ async def handle_chat_or_order(message: types.Message):
         await message.answer(text_msg, reply_markup=keyboard, parse_mode="Markdown")
         
     except Exception as e:
-        await message.answer("أهلاً بك! تفضل بطرح فكرتك البرمجية وسأقوم بمناقشتك وتوفير السكربت المناسب لها.")
-        print(e)
+        print(f"Error processing order: {e}")
+        await message.answer(
+            "⚠️ **تعذر معالجة الطلب حالياً.**\nإذا واجهتك أي مشكلة تواصل مباشرة مع الدعم الفني:",
+            reply_markup=SUPPORT_KEYBOARD,
+            parse_mode="Markdown"
+        )
 
 # ==========================================
-# 6. معالجة الدفع بالنجوم
+# 5. معالجة الدفع بالنجوم
 # ==========================================
 @dp.callback_query(F.data.startswith("buy_stars_"))
 async def process_stars_buy(callback_query: types.CallbackQuery):
@@ -290,7 +303,11 @@ async def process_stars_buy(callback_query: types.CallbackQuery):
     user_data = user_requests.get(user_id)
     
     if not user_data:
-        await bot.send_message(user_id, "⚠️ انتهت صلاحية الجلسة. أعد كتابة الطلب.")
+        await bot.send_message(
+            user_id, 
+            "⚠️ انتهت صلاحية الجلسة. أعد كتابة الطلب أو تواصل مع الدعم الفني:",
+            reply_markup=SUPPORT_KEYBOARD
+        )
         return
 
     await bot.send_invoice(
@@ -311,8 +328,6 @@ async def process_pre_checkout(pre_checkout_query: types.PreCheckoutQuery):
 async def process_successful_payment(message: types.Message):
     user_id = message.from_user.id
     user_data = user_requests.get(user_id)
-    
-    # تفريغ الخصم إن وُجد
     user_active_promo.pop(user_id, None)
 
     safe_name = message.from_user.full_name.replace("_", " ").replace("*", "").replace("`", "")
@@ -321,7 +336,7 @@ async def process_successful_payment(message: types.Message):
         f"👤 العميل: {safe_name}\n"
         f"🆔 الآيدي: `{user_id}`\n"
         f"💰 المبلغ: {message.successful_payment.total_amount} نجمة\n"
-        f"📦 الطلب: {user_data['prompt'][:100]}..."
+        f"📦 الطلب: {user_data['prompt'][:100] if user_data else 'طلب مخصص'}..."
     )
     try:
         await bot.send_message(ADMIN_ID, admin_notification, parse_mode="Markdown")
@@ -333,14 +348,11 @@ async def process_successful_payment(message: types.Message):
     await generate_and_send_code(prompt_text, message)
 
 # ==========================================
-# 7. تشغيل الخوادم للبوت و Render
+# 6. التشغيل الرئيسي
 # ==========================================
 async def main():
-    # 1. تشغيل المنفذ الوهمي لإرضاء سيرفر Render
     await start_dummy_server()
-
-    # 2. بدء البوت وتحديث الرسائل
-    print("🚀 متجر MISTX يعمل الآن بكامل المزايا وتم حل جميع المشاكل!")
+    print("🚀 متجر MISTX يعمل الآن بالنظام التفاعلي الجديد للأزرار والدعم الفني!")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
