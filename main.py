@@ -1,6 +1,7 @@
 import asyncio
 import os
 import json
+from aiohttp import web
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, LabeledPrice
@@ -29,6 +30,22 @@ user_requests = {}
 promo_codes = {}         # لحفظ أكواد الخصم ونسبتها: {"MISTX50": 50}
 user_active_promo = {}   # لحفظ الخصم النشط للعميل قبل الدفع: {user_id: 50}
 vip_users = set()        # قائمة الـ IDs للأشخاص المجانيين دائماً
+
+# ==========================================
+# 🌐 خادم المنفذ الوهمي لتفادي حظر Render (Port Timeout)
+# ==========================================
+async def dummy_health_check(request):
+    return web.Response(text="MISTX Bot is running successfully!")
+
+async def start_dummy_server():
+    app = web.Application()
+    app.router.add_get('/', dummy_health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+    print(f"🌐 Dummy HTTP Server running on port {port} for Render health checks.")
 
 # ==========================================
 # 2. أوامر لوحة تحكم المدير (خاصة بك فقط)
@@ -315,7 +332,14 @@ async def process_successful_payment(message: types.Message):
     prompt_text = user_data['prompt'] if user_data else 'كود برمجي'
     await generate_and_send_code(prompt_text, message)
 
+# ==========================================
+# 7. تشغيل الخوادم للبوت و Render
+# ==========================================
 async def main():
+    # 1. تشغيل المنفذ الوهمي لإرضاء سيرفر Render
+    await start_dummy_server()
+
+    # 2. بدء البوت وتحديث الرسائل
     print("🚀 متجر MISTX يعمل الآن بكامل المزايا وتم حل جميع المشاكل!")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
