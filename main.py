@@ -25,15 +25,37 @@ session = AiohttpSession(timeout=30)
 bot = Bot(token=TELEGRAM_TOKEN, session=session)
 dp = Dispatcher()
 
-# حالة انتظار إدخال كود الخصم
 class PromoState(StatesGroup):
     waiting_for_code = State()
 
-# قواميس التخزين المؤقتة
+# ==========================================
+# 📁 نظام حفظ الأكواد الدائم (promos.json)
+# ==========================================
+PROMOS_FILE = "promos.json"
+
+def load_promo_codes():
+    if os.path.exists(PROMOS_FILE):
+        try:
+            with open(PROMOS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    # أكواد افتراضية في حال عدم وجود الملف
+    default_promos = {"1400": 50, "MISTX": 50}
+    save_promo_codes(default_promos)
+    return default_promos
+
+def save_promo_codes(data):
+    try:
+        with open(PROMOS_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Error saving promos: {e}")
+
+promo_codes = load_promo_codes()
 user_requests = {}
-promo_codes = {}         # {"MISTX50": 50}
-user_active_promo = {}   # {user_id: 50}
-vip_users = set()        # قائمة الـ VIP
+user_active_promo = {}
+vip_users = set()
 
 SUPPORT_URL = "https://t.me/DARKMAIL_77"
 SUPPORT_KEYBOARD = InlineKeyboardMarkup(inline_keyboard=[
@@ -68,15 +90,15 @@ async def setup_bot_commands():
     await bot.set_my_commands(commands)
 
 # ==========================================
-# 3. لوحة تحكم المدير (خاصة بك)
+# 3. لوحة تحكم المدير
 # ==========================================
 @dp.message(Command("admin"))
 async def admin_panel(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
     text = (
         "👑 **لوحة تحكم المدير (متجر MISTX):**\n\n"
-        "➕ لإنشاء كود خصم:\n`/add_promo NEW 50`\n\n"
-        "➖ لحذف كود خصم:\n`/del_promo NEW`\n\n"
+        "➕ لإنشاء كود خصم:\n`/add_promo 1400 50`\n\n"
+        "➖ لحذف كود خصم:\n`/del_promo 1400`\n\n"
         "📋 لعرض الأكواد الفعالة:\n`/promos`\n\n"
         "🌟 إضافة وصول مجاني دائم (VIP):\n`/free 123456789`\n\n"
         "🗑 إزالة وصول مجاني:\n`/remove 123456789`"
@@ -88,10 +110,11 @@ async def add_promo_code(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
     try:
         parts = message.text.split()
-        code = parts[1].upper()
+        code = parts[1].strip().upper()
         discount = int(parts[2])
         promo_codes[code] = discount
-        await message.answer(f"✅ تم إنشاء كود الخصم `{code}` بنسبة {discount}%.", parse_mode="Markdown")
+        save_promo_codes(promo_codes)
+        await message.answer(f"✅ تم إنشاء كود الخصم `{code}` بنسبة {discount}% وحفظه بنجاح.", parse_mode="Markdown")
     except:
         await message.answer("⚠️ الطريقة الصحيحة: `/add_promo CODE 50`", parse_mode="Markdown")
 
@@ -99,9 +122,10 @@ async def add_promo_code(message: types.Message):
 async def del_promo_code(message: types.Message):
     if message.from_user.id != ADMIN_ID: return
     try:
-        code = message.text.split()[1].upper()
+        code = message.text.split()[1].strip().upper()
         if code in promo_codes:
             del promo_codes[code]
+            save_promo_codes(promo_codes)
             await message.answer(f"✅ تم حذف الكود `{code}` بنجاح.", parse_mode="Markdown")
         else:
             await message.answer("⚠️ هذا الكود غير موجود مسبقاً.")
@@ -140,7 +164,7 @@ async def remove_vip_user(message: types.Message):
         pass
 
 # ==========================================
-# 4. معالجة الأوامر من القائمة (≡)
+# 4. معالجة الأوامر وكود الخصم
 # ==========================================
 @dp.message(CommandStart())
 async def command_start_handler(message: types.Message, state: FSMContext):
@@ -166,32 +190,30 @@ async def command_help_handler(message: types.Message):
     help_text = "🛠 **قسم الدعم الفني:**\nلأي استفسار أو مشكلة، يمكنك التواصل المباشر مع الإدارة عبر الزر أدناه:"
     await message.answer(help_text, reply_markup=SUPPORT_KEYBOARD, parse_mode="Markdown")
 
-# عند ضغط الخيار /code من القائمة
 @dp.message(Command("code"))
 async def apply_promo_command(message: types.Message, state: FSMContext):
     args = message.text.split()
     if len(args) > 1:
-        # إذا كتب العميل /code MISTX50 مباشرة
-        await validate_and_apply_promo(args[1].upper(), message)
+        await validate_and_apply_promo(args[1], message)
         await state.clear()
     else:
-        # إذا ضغط العميل على /code من القائمة فقط
         await state.set_state(PromoState.waiting_for_code)
         await message.answer("✏️ **يرجى إرسال كود الخصم الآن في الرسالة القادمة:**", parse_mode="Markdown")
 
-# استقبال الكود المرسل بعد اختيار الأمر من القائمة
 @dp.message(PromoState.waiting_for_code)
 async def process_promo_input(message: types.Message, state: FSMContext):
     if message.text and message.text.startswith("/"):
         await state.clear()
         return
-    await validate_and_apply_promo(message.text.strip().upper(), message)
+    await validate_and_apply_promo(message.text, message)
     await state.clear()
 
-async def validate_and_apply_promo(code: str, message: types.Message):
+async def validate_and_apply_promo(input_code: str, message: types.Message):
     user_id = message.from_user.id
-    if code in promo_codes:
-        discount = promo_codes[code]
+    cleaned_code = input_code.strip().upper()
+    
+    if cleaned_code in promo_codes:
+        discount = promo_codes[cleaned_code]
         user_active_promo[user_id] = discount
         if discount == 100:
             await message.answer("🎁 **تم تفعيل كود الخصم بنسبة 100%! طلبك القادم مجاني بالكامل.**")
@@ -374,7 +396,7 @@ async def process_successful_payment(message: types.Message):
 async def main():
     await start_dummy_server()
     await setup_bot_commands()
-    print("🚀 متجر MISTX يعمل الآن مع قائمة الأوامر الرسمية (≡)!")
+    print("🚀 متجر MISTX يعمل الآن مع الحفظ الدائم للأكواد!")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
