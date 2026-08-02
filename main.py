@@ -40,7 +40,6 @@ def load_promo_codes():
                 return json.load(f)
         except Exception:
             pass
-    # أكواد افتراضية في حال عدم وجود الملف
     default_promos = {"1400": 50, "MISTX": 50}
     save_promo_codes(default_promos)
     return default_promos
@@ -164,7 +163,7 @@ async def remove_vip_user(message: types.Message):
         pass
 
 # ==========================================
-# 4. معالجة الأوامر وكود الخصم
+# 4. معالجة الأوامر والتحقق من الكود
 # ==========================================
 @dp.message(CommandStart())
 async def command_start_handler(message: types.Message, state: FSMContext):
@@ -250,9 +249,18 @@ async def generate_and_send_code(prompt_text, message: types.Message):
         )
 
 @dp.message()
-async def handle_chat_or_order(message: types.Message):
+async def handle_chat_or_order(message: types.Message, state: FSMContext):
     user_text = message.text
+    if not user_text: return
     user_id = message.from_user.id
+    cleaned_input = user_text.strip().upper()
+
+    # 🎯 فحص ذكي: إذا أرسل العميل كود الخصم مباشرة في الشات
+    if cleaned_input in promo_codes:
+        await validate_and_apply_promo(cleaned_input, message)
+        await state.clear()
+        return
+
     await bot.send_chat_action(chat_id=message.chat.id, action="typing")
     
     try:
@@ -310,7 +318,6 @@ async def handle_chat_or_order(message: types.Message):
         }
         
         paypal_dynamic_link = f"https://paypal.me/DarkMail641/{price_usd}USD"
-        paypal_support_link = "https://www.paypal.com/ncp/payment/2JSPL52BVSGDY"
         
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text=f"💳 دفع عبر PayPal ({price_usd}$)", url=paypal_dynamic_link)],
@@ -396,7 +403,7 @@ async def process_successful_payment(message: types.Message):
 async def main():
     await start_dummy_server()
     await setup_bot_commands()
-    print("🚀 متجر MISTX يعمل الآن مع الحفظ الدائم للأكواد!")
+    print("🚀 متجر MISTX يعمل الآن مع التعرّف الذكي الفوري على الأكواد!")
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
