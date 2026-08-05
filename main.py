@@ -17,7 +17,7 @@ from google import genai
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-ADMIN_ID = int(os.getenv("ADMIN_ID", 8280243933)) 
+ADMIN_ID = int(os.getenv("ADMIN_ID", **********)) 
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
