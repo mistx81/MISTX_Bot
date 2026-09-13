@@ -17,7 +17,7 @@ from google import genai
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-ADMIN_ID = int(os.getenv("ADMIN_ID", **********)) 
+ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 
@@ -178,7 +178,7 @@ async def command_start_handler(message: types.Message, state: FSMContext):
     
     await message.answer(welcome_text, parse_mode="Markdown")
     
-    if user_id != ADMIN_ID:
+    if user_id != ADMIN_ID and ADMIN_ID != 0:
         try:
             await bot.send_message(ADMIN_ID, f"🔔 شخص جديد دخل المتجر!\nالاسم: {safe_name}\nالـ ID: `{user_id}`", parse_mode="Markdown")
         except:
@@ -233,7 +233,7 @@ async def generate_and_send_code(prompt_text, message: types.Message):
             "اكتب الكود بلغة بايثون واضحة مع تعليقات تشرح كيفية الاستخدام."
         )
         response = client.models.generate_content(
-            model='gemini-3.5-flash',
+            model='gemini-1.5-flash',
             contents=coding_prompt,
         )
         await message.answer(
@@ -269,12 +269,12 @@ async def handle_chat_or_order(message: types.Message, state: FSMContext):
             f"رسالة العميل: '{user_text}'\n"
             "رد بـ كلمة واحدة فقط 'YES' أو 'NO'."
         )
-        check_res = client.models.generate_content(model='gemini-3.5-flash', contents=analysis_prompt)
+        check_res = client.models.generate_content(model='gemini-1.5-flash', contents=analysis_prompt)
         is_coding_request = "YES" in check_res.text.upper()
         
         if not is_coding_request:
             chat_prompt = f"أنت مستشار لمتجر MISTX. العميل يقول: {user_text}. أجب بلباقة واقترح المساعدة برمجياً."
-            chat_response = client.models.generate_content(model='gemini-3.5-flash', contents=chat_prompt)
+            chat_response = client.models.generate_content(model='gemini-1.5-flash', contents=chat_prompt)
             await message.answer(chat_response.text)
             return
 
@@ -294,7 +294,7 @@ async def handle_chat_or_order(message: types.Message, state: FSMContext):
             f"حلل طلب العميل: {user_text}. حدد السعر بالدولار. وقت الإنجاز 'تسليم فوري'."
             'رد بصيغة JSON حصرية فقط: {"price_usd": 7, "details": "وصف", "time": "تسليم فوري"}'
         )
-        response = client.models.generate_content(model='gemini-3.5-flash', contents=pricing_prompt)
+        response = client.models.generate_content(model='gemini-1.5-flash', contents=pricing_prompt)
         clean_response = response.text.strip().replace("```json", "").replace("```", "")
         data = json.loads(clean_response)
         
@@ -388,10 +388,11 @@ async def process_successful_payment(message: types.Message):
         f"💰 المبلغ: {message.successful_payment.total_amount} نجمة\n"
         f"📦 الطلب: {user_data['prompt'][:100] if user_data else 'طلب مخصص'}..."
     )
-    try:
-        await bot.send_message(ADMIN_ID, admin_notification, parse_mode="Markdown")
-    except:
-        pass
+    if ADMIN_ID != 0:
+        try:
+            await bot.send_message(ADMIN_ID, admin_notification, parse_mode="Markdown")
+        except:
+            pass
 
     await message.answer("🎉 **تم استلام الدفع بنجاح!**")
     prompt_text = user_data['prompt'] if user_data else 'كود برمجي'
